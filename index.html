@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PDF Password Remover</title>
+    <link rel="stylesheet" href="style.css" />
+    <!-- PDF.js library for reading PDFs -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <!-- pdf-lib for creating PDFs -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
+  </head>
+  <body>
+    <div class="container">
+      <div class="card">
+        <h1>PDF Password Remover</h1>
+        <p class="subtitle">Remove password protection from your PDF files</p>
+
+        <div class="form-group">
+          <label for="pdfFile">Select PDF File:</label>
+          <input type="file" id="pdfFile" accept=".pdf" required />
+          <span class="file-info" id="fileName"></span>
+        </div>
+
+        <div class="form-group">
+          <label for="password">PDF Password:</label>
+          <input
+            type="password"
+            id="password"
+            placeholder="Enter the PDF password"
+            required
+          />
+        </div>
+
+        <button id="removeBtn" class="btn btn-primary">Remove Password</button>
+
+        <div id="status" class="status"></div>
+        <div
+          id="progressContainer"
+          class="progress-container"
+          style="display: none"
+        >
+          <div class="progress-bar" id="progressBar"></div>
+        </div>
+      </div>
+
+      <div id="resultCard" class="card result-card" style="display: none">
+        <h2>Success!</h2>
+        <p>Your password-protected PDF has been processed.</p>
+        <button id="downloadBtn" class="btn btn-success">
+          Download Password-Free PDF
+        </button>
+      </div>
+    </div>
+
+    <script src="script.js"></script>
+  </body>
+</html>
