@@ -1,12 +1,27 @@
-// Set up PDF.js worker
-pdfjsLib.GlobalWorkerOptions.workerSrc =
-  "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+// WASM qPDF initialization
+let qpdfReady = false;
+let qpdfModule = null;
+
+// Initialize qPDF WASM module
+(async () => {
+  try {
+    // qpdf-wasm loads globally as 'qpdf' function
+    if (typeof qpdf !== "undefined") {
+      qpdfReady = true;
+      console.log("qPDF WASM loaded successfully");
+    }
+  } catch (e) {
+    console.error("qPDF WASM loading error:", e);
+  }
+})();
 
 let processedPdfBytes = null;
+let originalFileName = "";
 
 // File input handler
 document.getElementById("pdfFile").addEventListener("change", (e) => {
   const fileName = e.target.files[0]?.name;
+  originalFileName = fileName;
   document.getElementById("fileName").textContent = fileName
     ? `Selected: ${fileName}`
     : "";
@@ -19,6 +34,15 @@ document
 
 // Download button handler
 document.getElementById("downloadBtn").addEventListener("click", downloadPdf);
+
+function readFile(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => resolve(e.target.result);
+    reader.onerror = reject;
+    reader.readAsArrayBuffer(file);
+  });
+}
 
 async function removePdfPassword() {
   const fileInput = document.getElementById("pdfFile");
@@ -38,111 +62,99 @@ async function removePdfPassword() {
     return;
   }
 
+  if (!qpdfReady) {
+    showStatus(
+      "qPDF is loading... Please wait a moment and try again",
+      "error"
+    );
+    return;
+  }
+
   try {
     removeBtn.disabled = true;
-    showStatus("Processing your PDF...", "info");
+    showStatus("Processing your PDF with native qPDF...", "info");
     progressContainer.style.display = "block";
     updateProgress(10);
 
-    // Read file as ArrayBuffer
+    // Read the PDF file
     const fileBuffer = await readFile(fileInput.files[0]);
     updateProgress(20);
 
-    // Load PDF with password
-    const pdf = await loadPdfWithPassword(fileBuffer, password);
-    updateProgress(40);
+    // Use qpdf-wasm to decrypt
+    // The module exposes a run() function for CLI-like operations
+    const inputPath = "/input.pdf";
+    const outputPath = "/output.pdf";
 
-    // Render PDF pages as images and create new PDF
-    processedPdfBytes = await convertPdfToPasswordFreePdf(pdf);
-    updateProgress(100);
+    try {
+      // Create a Uint8Array from the buffer
+      const pdfBytes = new Uint8Array(fileBuffer);
 
-    showStatus("PDF password successfully removed!", "success");
-    document.getElementById("resultCard").style.display = "block";
+      // Write input PDF to virtual filesystem
+      qpdf.FS.writeFile(inputPath, pdfBytes);
+      updateProgress(30);
+
+      // Run qPDF to decrypt with password
+      // Command: qpdf --password=<password> --decrypt input.pdf output.pdf
+      const result = await new Promise((resolve, reject) => {
+        try {
+          qpdf.run([
+            "--password=" + password,
+            "--decrypt",
+            inputPath,
+            outputPath
+          ]);
+          resolve();
+        } catch (err) {
+          reject(err);
+        }
+      });
+
+      updateProgress(70);
+
+      // Read the decrypted PDF from virtual filesystem
+      const decryptedBytes = qpdf.FS.readFile(outputPath);
+      processedPdfBytes = decryptedBytes.buffer;
+
+      // Clean up virtual filesystem
+      try {
+        qpdf.FS.unlink(inputPath);
+        qpdf.FS.unlink(outputPath);
+      } catch (e) {
+        console.log("Cleanup note:", e.message);
+      }
+
+      updateProgress(100);
+      showStatus("PDF password successfully removed! (Native qPDF)", "success");
+      document.getElementById("resultCard").style.display = "block";
+    } catch (qpdfError) {
+      console.error("qPDF error:", qpdfError);
+      if (
+        qpdfError.message &&
+        qpdfError.message.toLowerCase().includes("password")
+      ) {
+        showStatus(
+          "Error: Incorrect password or PDF is not encrypted",
+          "error"
+        );
+      } else {
+        showStatus(
+          `Error: ${qpdfError.message || "Failed to decrypt PDF"}`,
+          "error"
+        );
+      }
+    }
   } catch (error) {
     console.error("Error:", error);
-    showStatus(`Error: ${error.message}`, "error");
+    showStatus(
+      `Error: ${error.message || "Failed to process PDF"}`,
+      "error"
+    );
   } finally {
     removeBtn.disabled = false;
     setTimeout(() => {
       progressContainer.style.display = "none";
     }, 500);
   }
-}
-
-function readFile(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = (e) => resolve(e.target.result);
-    reader.onerror = reject;
-    reader.readAsArrayBuffer(file);
-  });
-}
-
-async function loadPdfWithPassword(fileBuffer, password) {
-  try {
-    const pdf = await pdfjsLib.getDocument({
-      data: new Uint8Array(fileBuffer),
-      password: password,
-    }).promise;
-    return pdf;
-  } catch (error) {
-    if (error.message.includes("Invalid PDF")) {
-      throw new Error("Invalid PDF file");
-    } else if (error.message.includes("password")) {
-      throw new Error("Incorrect password or PDF is corrupted");
-    }
-    throw error;
-  }
-}
-
-async function convertPdfToPasswordFreePdf(pdf) {
-  const { PDFDocument, PDFPage } = PDFLib;
-  const newPdf = await PDFDocument.create();
-
-  const pageCount = pdf.numPages;
-
-  for (let i = 1; i <= pageCount; i++) {
-    try {
-      const page = await pdf.getPage(i);
-
-      // Create canvas for rendering
-      const canvas = document.createElement("canvas");
-      const context = canvas.getContext("2d");
-      const viewport = page.getViewport({ scale: 2 }); // Higher scale for better quality
-
-      canvas.width = viewport.width;
-      canvas.height = viewport.height;
-
-      // Render page to canvas
-      await page.render({
-        canvasContext: context,
-        viewport: viewport,
-      }).promise;
-
-      // Convert canvas to image
-      const imgData = canvas.toDataURL("image/png");
-      const imgBytes = await fetch(imgData).then((res) => res.arrayBuffer());
-
-      // Embed image in new PDF
-      const image = await newPdf.embedPng(imgBytes);
-      const pdfPage = newPdf.addPage([viewport.width, viewport.height]);
-      pdfPage.drawImage(image, {
-        x: 0,
-        y: 0,
-        width: viewport.width,
-        height: viewport.height,
-      });
-
-      // Update progress
-      const progress = 40 + (i / pageCount) * 60;
-      updateProgress(progress);
-    } catch (error) {
-      console.error(`Error processing page ${i}:`, error);
-      throw new Error(`Error processing page ${i}: ${error.message}`);
-    }
-  }
-
-  return await newPdf.save();
 }
 
 function updateProgress(percent) {
@@ -165,9 +177,40 @@ function downloadPdf() {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = "password_removed.pdf";
+  a.download = originalFileName || "password_removed.pdf";
+  a.style.display = "none";
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
+  showStatus("PDF downloaded successfully!", "success");
+}
+
+function updateProgress(percent) {
+  document.getElementById("progressBar").style.width = percent + "%";
+}
+
+function showStatus(message, type) {
+  const statusDiv = document.getElementById("status");
+  statusDiv.textContent = message;
+  statusDiv.className = "status " + type;
+}
+
+function downloadPdf() {
+  if (!processedPdfBytes) {
+    showStatus("No PDF to download", "error");
+    return;
+  }
+
+  const blob = new Blob([processedPdfBytes], { type: "application/pdf" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = originalFileName || "password_removed.pdf";
+  a.style.display = "none";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  showStatus("PDF downloaded successfully!", "success");
 }
